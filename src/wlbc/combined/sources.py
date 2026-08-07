@@ -45,6 +45,7 @@ def collect(
     use_oura: bool = True,
     use_renpho: bool = True,
     sandbox: bool = False,
+    body_start: dt.date | None = None,
 ) -> list[DailyRecord]:
     """Fetch, join, and smooth. Either source can be skipped.
 
@@ -52,10 +53,20 @@ def collect(
     Weigh-ins from before *start* are still used to warm up the trailing trend,
     so the first day of the chart has a real trend value rather than a lone
     reading.
+
+    ``body_start`` cuts body-composition data off before a given day while
+    leaving Oura's range untouched — for when older weigh-ins came from a
+    different scale, a different person, or a period you don't want counted.
+    Oura still covers the full span; the body-comp charts start where the
+    trustworthy readings do.
     """
     body = fetch_renpho(pick=pick) if use_renpho else {}
+    if body_start is not None:
+        body = {day: values for day, values in body.items() if day >= body_start}
     oura = fetch_oura(start, end, sandbox=sandbox) if use_oura else {}
 
+    # The trend warm-up may reach back before `start`, but never before
+    # `body_start` — that cutoff is a statement about data quality, not a window.
     warmup = start - dt.timedelta(days=window_days)
     records = merge_daily(body, oura, start=warmup, end=end)
     add_trends(records, window_days=window_days)

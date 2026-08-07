@@ -222,7 +222,10 @@ function renderChart(container, spec) {
   container.innerHTML = "";
   const svg = el("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": spec.ariaLabel || "" });
 
-  const rows = DATA.rows;
+  // A chart may cover a sub-range of the report: body composition can start
+  // later than Oura, and padding it with empty leading days would shrink the
+  // real data into a sliver at the right edge.
+  const rows = DATA.rows.slice(spec.from ?? 0, (spec.to ?? DATA.rows.length - 1) + 1);
   const allValues = [];
   for (const s of spec.series) {
     for (const row of rows) {
@@ -373,6 +376,10 @@ window.addEventListener("resize", () => {
 """
 
 
+def _plural(count: int, singular: str, plural: str | None = None) -> str:
+    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+
 def _tile(label: str, value: str, unit: str = "", note: str = "", tone: str = "") -> str:
     cls = f" {tone}" if tone else ""
     unit_html = f'<span class="unit">{html.escape(unit)}</span>' if unit else ""
@@ -465,30 +472,60 @@ def build_report(
         if summary.start_day and summary.end_day
         else "no data"
     )
+    weigh_in_count = _plural(summary.weigh_ins, "weigh-in")
+    subhead = f"{span} · {weigh_in_count} over {_plural(summary.days_covered, 'day')}"
+    # A single reading is a snapshot, not a trajectory: change, rate, and the
+    # fat/lean split all require two points to mean anything.
+    comparable = summary.weigh_ins >= 2
+
+    # Where body composition actually starts. Oura keeps the full span; the
+    # body-comp charts begin here so a late start is not squeezed to the margin.
+    body_from = next(
+        (index for index, record in enumerate(records) if record.has_body_comp), 0
+    )
+    body_span = max(1, len(records) - body_from)
+
+    if has_body := any(record.has_body_comp for record in records):
+        body_first_day = records[body_from].day
+        if body_from > 0:
+            subhead = (
+                f"Oura {span} · body composition from {body_first_day:%d %b %Y} "
+                f"({weigh_in_count} over {_plural(body_span, 'day')})"
+            )
+
+    # Smoothing only earns its place when there is enough to smooth. Below
+    # roughly one weigh-in every three days the trailing mean is mostly holding
+    # a single reading, so the charts show the readings themselves instead.
+    # Measured over the body-comp span, not the Oura span — otherwise a long
+    # Oura history would make daily weigh-ins look sparse.
+    dense = summary.weigh_ins >= max(3, body_span / 3)
+    weight_line = "weight_kg_trend" if dense else "weight_kg"
+    fat_pct_line = "body_fat_pct_trend" if dense else "body_fat_pct"
+    line_label = f"{window_days}-day trend" if dense else "Reading to reading"
 
     # -- tiles -----------------------------------------------------------
     tiles = []
     if summary.last_weight_kg is not None:
         tiles.append(
             _tile(
-                f"Weight ({window_days}-day trend)",
+                f"Weight ({window_days}-day trend)" if dense else "Weight (latest)",
                 f"{summary.last_weight_kg:.1f}",
                 mass_unit,
-                f"{summary.weigh_ins} weigh-ins",
+                weigh_in_count,
             )
         )
-    if summary.change_kg is not None:
+    if summary.change_kg is not None and comparable:
         tone = "delta-down" if summary.change_kg < 0 else "delta-up" if summary.change_kg > 0 else ""
         tiles.append(
             _tile(
                 "Change over range",
                 f"{summary.change_kg:+.1f}",
                 mass_unit,
-                f"over {summary.days_covered} days",
+                f"over {_plural(summary.days_covered, 'day')}",
                 tone,
             )
         )
-    if summary.kg_per_week is not None:
+    if summary.kg_per_week is not None and comparable:
         tone = "delta-down" if summary.kg_per_week < 0 else "delta-up" if summary.kg_per_week > 0 else ""
         tiles.append(
             _tile("Rate", f"{summary.kg_per_week:+.2f}", f"{mass_unit}/wk", "least-squares fit", tone)
@@ -496,11 +533,11 @@ def build_report(
     if summary.last_body_fat_pct is not None:
         note = (
             f"{summary.body_fat_change_pct:+.1f} pts over range"
-            if summary.body_fat_change_pct is not None
+            if summary.body_fat_change_pct is not None and comparable
             else ""
         )
         tiles.append(_tile("Body fat", f"{summary.last_body_fat_pct:.1f}", "%", note))
-    if summary.fat_change_kg is not None and summary.lean_change_kg is not None:
+    if summary.fat_change_kg is not None and summary.lean_change_kg is not None and comparable:
         tiles.append(
             _tile(
                 "Composition of change",
@@ -512,30 +549,49 @@ def build_report(
 
     # -- charts ----------------------------------------------------------
     cards = []
-    has_body = any(record.has_body_comp for record in records)
 
     if has_body:
+        if dense:
+            weight_caption = (
+                f"Each weigh-in as a dot, with the {window_days}-day trailing mean over it. "
+                "Day-to-day scale weight moves on water and food; the line is the signal."
+            )
+        elif not comparable:
+            weight_caption = (
+                "A single weigh-in — a starting point, not a trend. Weigh in again and this "
+                f"becomes a line; after about one reading every three days it becomes a "
+                f"{window_days}-day trend."
+            )
+        else:
+            weight_caption = (
+                f"{weigh_in_count} over {_plural(body_span, 'day')} is too sparse to smooth — a "
+                f"{window_days}-day mean would just hold each reading flat for a week and then "
+                "step. These are the actual readings, connected. Weigh in more often and this "
+                "becomes a trend line."
+            )
         cards.append(
             _chart_card(
                 f"Weight ({mass_unit})",
-                f"Each weigh-in as a dot, with the {window_days}-day trailing mean over it. "
-                "Day-to-day scale weight moves on water and food; the line is the signal.",
+                weight_caption,
                 {
                     "series": [
                         {"key": "weight_kg", "label": "Weigh-in", "color": "--series-1", "type": "dot", "digits": 1},
-                        {"key": "weight_kg_trend", "label": f"{window_days}-day trend", "color": "--series-1", "type": "line", "digits": 2},
+                        {"key": weight_line, "label": line_label, "color": "--series-1", "type": "line", "digits": 2 if dense else 1},
                     ],
                     "height": 260,
                     "unit": mass_unit,
-                    "ariaLabel": "Weight over time with trailing mean",
+                    "from": body_from,
+                    "ariaLabel": "Weight over time",
                 },
-                legend=[("Weigh-in", "--series-1", "dot"), (f"{window_days}-day trend", "--series-1", "line")],
+                legend=[("Weigh-in", "--series-1", "dot"), (line_label, "--series-1", "line")],
             )
         )
-        start_label = f"{summary.start_day:%d %b}" if summary.start_day else "the start"
+    # The fat/lean split needs two points to have a shape at all; with one
+    # reading it would be a flat line pinned at zero, which says nothing.
+    if has_body and comparable:
         cards.append(
             _chart_card(
-                f"Where the change came from ({mass_unit} since {start_label})",
+                f"Where the change came from ({mass_unit} since {body_first_day:%d %b})",
                 "Fat and lean mass sit tens of kilos apart, so plotting them raw would flatten both "
                 "into straight lines. Indexed to zero at the start of the range they share an axis "
                 "honestly: the gap between the two lines is the split of your weight change.",
@@ -547,11 +603,14 @@ def build_report(
                     "height": 240,
                     "unit": mass_unit,
                     "zeroLine": True,
+                    "from": body_from,
                     "ariaLabel": "Change in fat mass and lean mass since the start of the range",
                 },
                 legend=[("Fat mass", "--series-2", "line"), ("Lean mass", "--series-3", "line")],
             )
         )
+
+    if has_body:
         cards.append(
             _chart_card(
                 "Body fat (%)",
@@ -559,17 +618,22 @@ def build_report(
                 {
                     "series": [
                         {"key": "body_fat_pct", "label": "Body fat", "color": "--series-2", "type": "dot", "digits": 1},
-                        {"key": "body_fat_pct_trend", "label": "Trend", "color": "--series-2", "type": "line", "digits": 2},
+                        {"key": fat_pct_line, "label": line_label, "color": "--series-2", "type": "line", "digits": 2 if dense else 1},
                     ],
                     "height": 220,
                     "unit": "%",
+                    "from": body_from,
                     "ariaLabel": "Body fat percentage over time",
                 },
-                legend=[("Reading", "--series-2", "dot"), (f"{window_days}-day trend", "--series-2", "line")],
+                legend=[("Reading", "--series-2", "dot"), (line_label, "--series-2", "line")],
             )
         )
-    else:
-        cards.append('<section class="card"><p class="empty">No Renpho measurements in this range.</p></section>')
+
+    if not has_body:
+        cards.append(
+            '<section class="card"><p class="empty">No Renpho measurements in this range.'
+            "</p></section>"
+        )
 
     # Oura context: separate panels, each with its own axis. Never a shared scale.
     oura_panels = [
@@ -615,7 +679,7 @@ def build_report(
 <div class="wrap">
 <header>
   <h1>{html.escape(title)}</h1>
-  <p class="subhead">{html.escape(span)} · {summary.weigh_ins} weigh-ins over {summary.days_covered} days</p>
+  <p class="subhead">{html.escape(subhead)}</p>
 </header>
 <div class="tiles">{"".join(tiles)}</div>
 {"".join(cards)}

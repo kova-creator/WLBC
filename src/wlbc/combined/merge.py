@@ -307,6 +307,7 @@ def add_trends(
     records: Sequence[DailyRecord],
     metrics: Sequence[str] = ("weight_kg", "body_fat_pct", "fat_mass_kg", "lean_mass_kg"),
     window_days: int = 7,
+    min_observations: int = 2,
 ) -> list[DailyRecord]:
     """Attach a trailing-mean trend for each metric, in place.
 
@@ -314,9 +315,18 @@ def add_trends(
     weigh-ins widens the window rather than silently reaching further back
     through time than intended. Day-to-day scale weight swings by a kilo or more
     on water alone; the trend line is the part worth reading.
+
+    ``min_observations`` guards against the degenerate case: a window holding a
+    single weigh-in has nothing to average, and averaging it anyway produces a
+    flat plateau that holds the last reading for a week and then steps. On
+    sparse data that staircase reads as "weight was stable, then jumped" when
+    the truth is just "there was one measurement." Below the threshold the trend
+    is None, and the chart falls back to showing the readings themselves.
     """
     if window_days < 1:
         raise ValueError("window_days must be at least 1")
+    if min_observations < 1:
+        raise ValueError("min_observations must be at least 1")
 
     for index, record in enumerate(records):
         cutoff = record.day - dt.timedelta(days=window_days - 1)
@@ -327,7 +337,9 @@ def add_trends(
                 if earlier.day >= cutoff
                 and (value := getattr(earlier, metric)) is not None
             ]
-            record.trend[metric] = statistics.fmean(values) if values else None
+            record.trend[metric] = (
+                statistics.fmean(values) if len(values) >= min_observations else None
+            )
     return list(records)
 
 

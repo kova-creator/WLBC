@@ -10,6 +10,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from ..oura.cli import load_dotenv
 from ..oura.errors import OuraError
 from ..renpho.errors import RenphoError
 from .merge import BODY_FIELDS, OURA_FIELDS, convert_units, summarize
@@ -30,6 +31,7 @@ def _resolve_range(args) -> tuple[dt.date, dt.date]:
 
 def _gather(args):
     start, end = _resolve_range(args)
+    body_start = dt.date.fromisoformat(args.body_start) if args.body_start else None
     records = collect(
         start,
         end,
@@ -38,6 +40,7 @@ def _gather(args):
         use_oura=not args.no_oura,
         use_renpho=not args.no_renpho,
         sandbox=args.sandbox,
+        body_start=body_start,
     )
     return convert_units(records, args.units), summarize(convert_units(records, args.units))
 
@@ -135,6 +138,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="first",
         help="which weigh-in to use when a day has several (default: first, the morning reading)",
     )
+    parser.add_argument(
+        "--body-start",
+        metavar="YYYY-MM-DD",
+        help=(
+            "ignore Renpho weigh-ins before this date, without shortening Oura's range. "
+            "Use when older scale readings aren't yours or aren't trustworthy."
+        ),
+    )
     parser.add_argument("--no-oura", action="store_true", help="skip Oura; body composition only")
     parser.add_argument("--no-renpho", action="store_true", help="skip Renpho; Oura only")
     parser.add_argument("--sandbox", action="store_true", help="use Oura's sample-data sandbox")
@@ -160,6 +171,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Both sources read credentials from the environment. Renpho's config loader
+    # happens to load .env as a side effect, but that only fires when Renpho is
+    # in play — load it up front so --no-renpho still finds the Oura token.
+    load_dotenv()
     args = build_parser().parse_args(argv)
     if args.no_oura and args.no_renpho:
         print("error: --no-oura and --no-renpho together leave nothing to fetch.", file=sys.stderr)

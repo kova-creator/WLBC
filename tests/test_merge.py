@@ -78,10 +78,33 @@ def test_trend_window_is_calendar_days_not_rows():
         D1: {"weight_kg": 80.0},
         dt.date(2026, 7, 20): {"weight_kg": 70.0},
     }
-    records = add_trends(merge_daily(body, {}), metrics=("weight_kg",), window_days=7)
+    records = add_trends(
+        merge_daily(body, {}), metrics=("weight_kg",), window_days=7, min_observations=1
+    )
     last = records[-1]
     # The 1 July reading is 19 days back, so it must not pull the trend down.
     assert last.trend["weight_kg"] == pytest.approx(70.0)
+
+
+def test_single_observation_window_produces_no_trend():
+    # Two weigh-ins three weeks apart: neither window holds enough to average,
+    # so no trend — otherwise the line plateaus and steps, implying a stability
+    # the data never showed.
+    body = {D1: {"weight_kg": 80.0}, dt.date(2026, 7, 22): {"weight_kg": 79.0}}
+    records = add_trends(merge_daily(body, {}), metrics=("weight_kg",), window_days=7)
+    assert all(record.trend["weight_kg"] is None for record in records)
+
+
+def test_trend_appears_once_the_window_holds_two_readings():
+    body = {D1: {"weight_kg": 80.0}, D2: {"weight_kg": 79.0}}
+    records = add_trends(merge_daily(body, {}), metrics=("weight_kg",), window_days=7)
+    assert records[0].trend["weight_kg"] is None
+    assert records[1].trend["weight_kg"] == pytest.approx(79.5)
+
+
+def test_add_trends_rejects_bad_min_observations():
+    with pytest.raises(ValueError):
+        add_trends(merge_daily({D1: {"weight_kg": 80.0}}, {}), min_observations=0)
 
 
 def test_trend_is_none_when_window_is_empty():

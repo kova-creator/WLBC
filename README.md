@@ -31,7 +31,31 @@ wlbc merge --days 30 --only-measured      # drop days with no weigh-in
 
 Global options apply to every subcommand: `--days` / `--start` / `--end`,
 `--units kg|lb`, `--window` (trend window, default 7 days), `--pick` (which
-weigh-in to use when a day has several), `--no-oura` / `--no-renpho`.
+weigh-in to use when a day has several), `--body-start`, `--no-oura` /
+`--no-renpho`.
+
+### Different ranges per source
+
+`--body-start` ignores Renpho weigh-ins before a date without shortening Oura's
+range — for when older scale readings aren't yours or aren't trustworthy. Oura
+still covers the full span; the body-composition charts begin where the good
+readings do, and the report header says so.
+
+```bash
+wlbc --start 2026-04-03 --body-start 2026-08-05 report -o report.html
+```
+
+### It adapts to how much data you have
+
+The report changes shape rather than implying precision the data doesn't
+support:
+
+| Weigh-ins | What you get |
+|---|---|
+| 0 | "No Renpho measurements in this range" |
+| 1 | Weight and body fat as a point. No change, rate, or fat/lean split — one reading is a starting point, not a trajectory. |
+| Sparse (< ~1 per 3 days) | The actual readings, connected. A trailing mean here would hold each reading flat for a week and then step, which reads as stability that never happened. |
+| Dense | Dots plus the trailing mean, and the full fat/lean split. |
 
 ### What the report shows
 
