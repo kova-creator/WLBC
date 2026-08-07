@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-from .auth import OAuth2Auth, TokenStore, auth_from_env
+from .auth import ALL_SCOPES, EXTAPI_SCOPES, OAuth2Auth, TokenStore, auth_from_env
 from .client import DATE_COLLECTIONS, DATETIME_COLLECTIONS, OuraClient
 from .errors import OuraError
 
@@ -61,6 +61,11 @@ def cmd_login(args) -> int:
             file=sys.stderr,
         )
         return 1
+    if args.scopes:
+        auth.scopes = EXTAPI_SCOPES if args.scopes == "extapi" else tuple(
+            scope.strip() for scope in args.scopes.split(",") if scope.strip()
+        )
+    print(f"Requesting scopes: {' '.join(auth.scopes)}")
     token = auth.login(open_browser=not args.no_browser)
     print(f"Authorized. Scopes: {token.scope or '(not reported)'}")
     print(f"Token saved to {auth.store.path}")
@@ -123,6 +128,15 @@ def build_parser() -> argparse.ArgumentParser:
     login = sub.add_parser("login", help="Authorize with Oura via OAuth2 and store the token.")
     login.add_argument("--no-browser", action="store_true", help="Print the URL instead of opening it.")
     login.add_argument("--token-path", help="Where to store the token JSON.")
+    login.add_argument(
+        "--scopes",
+        metavar="LIST",
+        help=(
+            "Override the requested scopes: a comma-separated list, or the literal "
+            "'extapi' for the developer portal's extapi:-prefixed names. Try this if "
+            f"login fails on an invalid scope. Default: {' '.join(ALL_SCOPES)}"
+        ),
+    )
     login.set_defaults(func=cmd_login)
 
     logout = sub.add_parser("logout", help="Delete the stored token.")

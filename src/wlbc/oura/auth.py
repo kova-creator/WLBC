@@ -27,6 +27,7 @@ from .errors import OuraAuthError
 AUTHORIZE_URL = "https://cloud.ouraring.com/oauth/authorize"
 TOKEN_URL = "https://api.ouraring.com/oauth/token"
 
+# Scope names as documented in Oura's OpenAPI spec (v1.37).
 ALL_SCOPES = (
     "email",
     "personal",
@@ -36,6 +37,23 @@ ALL_SCOPES = (
     "tag",
     "session",
     "spo2Daily",
+)
+
+# The developer portal labels the same permissions with an `extapi:` prefix, and
+# lists three the spec does not mention. If an authorize request is rejected for
+# an invalid scope, retry with these via `wlbc-oura login --scopes`.
+EXTAPI_SCOPES = (
+    "extapi:email",
+    "extapi:personal",
+    "extapi:daily",
+    "extapi:heartrate",
+    "extapi:tag",
+    "extapi:workout",
+    "extapi:session",
+    "extapi:spo2",
+    "extapi:ring_configuration",
+    "extapi:stress",
+    "extapi:heart_health",
 )
 
 DEFAULT_TOKEN_PATH = Path.home() / ".config" / "wlbc" / "oura_token.json"
