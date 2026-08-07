@@ -11,6 +11,7 @@ import html
 import json
 from typing import Sequence
 
+from ..goals import Plan, evaluate
 from .merge import DailyRecord, Summary
 
 # Slots 1-3 of the reference palette, at their documented hexes. That subset is
@@ -459,13 +460,26 @@ def build_report(
     window_days: int = 7,
     title: str = "Body composition",
     generated: dt.datetime | None = None,
+    plan: Plan | None = None,
 ) -> str:
-    """Render the whole report to an HTML string."""
+    """Render the whole report to an HTML string.
+
+    ``plan`` must already be in ``units`` — the caller converts, so the target
+    line and the measured line can never end up on different scales.
+    """
     mass_unit = "kg" if units == "kg" else "lb"
     generated = generated or dt.datetime.now()
 
     rows = [record.to_dict() for record in records]
+    if plan is not None:
+        for row, record in zip(rows, records):
+            row["target_weight"] = plan.target_weight(record.day)
+            row["target_steps"] = plan.target_steps(record.day)
     payload = {"rows": rows, "unit": mass_unit}
+
+    # summary was computed on the already-converted records, so its rate is in
+    # display units despite the field name.
+    progress = evaluate(plan, records, summary.kg_per_week) if plan is not None else None
 
     span = (
         f"{summary.start_day:%d %b %Y} – {summary.end_day:%d %b %Y}"
@@ -530,6 +544,33 @@ def build_report(
         tiles.append(
             _tile("Rate", f"{summary.kg_per_week:+.2f}", f"{mass_unit}/wk", "least-squares fit", tone)
         )
+    if progress is not None and progress.delta is not None:
+        # Colour follows the verdict, not the raw sign: being 0.1 lb over target
+        # on day zero is noise, and painting it red would contradict the
+        # "on track" label sitting directly beneath it.
+        if progress.status == "on track":
+            tone = ""
+        else:
+            tone = "delta-down" if progress.delta < 0 else "delta-up"
+        tiles.append(
+            _tile(
+                "vs target",
+                f"{progress.delta:+.1f}",
+                mass_unit,
+                f"{progress.status} · target {progress.target:.1f} {mass_unit}",
+                tone,
+            )
+        )
+    if progress is not None and progress.remaining is not None:
+        tiles.append(
+            _tile(
+                "To goal",
+                f"{abs(progress.remaining):.1f}",
+                mass_unit,
+                f"goal {plan.goal_weight:.0f} {mass_unit} by {plan.end_date:%d %b %Y}",
+            )
+        )
+
     if summary.last_body_fat_pct is not None:
         note = (
             f"{summary.body_fat_change_pct:+.1f} pts over range"
@@ -569,21 +610,34 @@ def build_report(
                 "step. These are the actual readings, connected. Weigh in more often and this "
                 "becomes a trend line."
             )
+        weight_series = [
+            {"key": "weight_kg", "label": "Weigh-in", "color": "--series-1", "type": "dot", "digits": 1},
+            {"key": weight_line, "label": line_label, "color": "--series-1", "type": "line", "digits": 2 if dense else 1},
+        ]
+        weight_legend = [("Weigh-in", "--series-1", "dot"), (line_label, "--series-1", "line")]
+        if plan is not None:
+            weight_series.append(
+                {"key": "target_weight", "label": "Target", "color": "--series-3", "type": "line", "digits": 1}
+            )
+            weight_legend.append(("Target", "--series-3", "line"))
+            weight_caption += (
+                f" The target line runs from {plan.start_weight:.1f} to "
+                f"{plan.goal_weight:.1f} {mass_unit} by {plan.end_date:%d %b %Y}; "
+                "below it is ahead of plan."
+            )
+
         cards.append(
             _chart_card(
                 f"Weight ({mass_unit})",
                 weight_caption,
                 {
-                    "series": [
-                        {"key": "weight_kg", "label": "Weigh-in", "color": "--series-1", "type": "dot", "digits": 1},
-                        {"key": weight_line, "label": line_label, "color": "--series-1", "type": "line", "digits": 2 if dense else 1},
-                    ],
+                    "series": weight_series,
                     "height": 260,
                     "unit": mass_unit,
                     "from": body_from,
-                    "ariaLabel": "Weight over time",
+                    "ariaLabel": "Weight over time against the plan target",
                 },
-                legend=[("Weigh-in", "--series-1", "dot"), (line_label, "--series-1", "line")],
+                legend=weight_legend,
             )
         )
     # The fat/lean split needs two points to have a shape at all; with one
@@ -648,8 +702,22 @@ def build_report(
     if available:
         panels_html = []
         for key, label, caption, digits in available:
+            series = [{"key": key, "label": label, "color": "--series-1", "type": "line", "digits": digits}]
+            legend = ()
+            # Steps are the one Oura metric the plan sets a target for, and
+            # both are step counts, so they share an axis honestly.
+            if key == "steps" and plan is not None:
+                series.append(
+                    {"key": "target_steps", "label": "Target", "color": "--series-3", "type": "line", "digits": 0}
+                )
+                legend = [("Actual", "--series-1", "line"), ("Target", "--series-3", "line")]
+                caption = (
+                    f"Daily steps against the plan's ramp: {plan.steps.baseline:,} to "
+                    f"{plan.steps.goal:,}, rising {plan.steps.increment:,} every "
+                    f"{plan.steps.every_weeks} weeks."
+                )
             spec = json.dumps({
-                "series": [{"key": key, "label": label, "color": "--series-1", "type": "line", "digits": digits}],
+                "series": series,
                 "height": 150,
                 "ariaLabel": label,
             })
@@ -657,6 +725,7 @@ def build_report(
                 '<div class="panel">'
                 f"<h3>{html.escape(label)}</h3>"
                 f'<p class="caption">{html.escape(caption)}</p>'
+                f"{_legend(legend) if legend else ''}"
                 f'<div class="chart" data-chart="{html.escape(spec, quote=True)}"></div>'
                 "</div>"
             )

@@ -10,6 +10,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from ..goals import DEFAULT_GOALS_PATH, GoalsError, Plan, evaluate
 from ..oura.cli import load_dotenv
 from ..oura.errors import OuraError
 from ..renpho.errors import RenphoError
@@ -27,6 +28,16 @@ def _resolve_range(args) -> tuple[dt.date, dt.date]:
     if start > end:
         raise SystemExit("error: --start is after --end")
     return start, end
+
+
+def _load_plan(args) -> Plan | None:
+    """The plan, if one is saved. Absent is fine — goals are optional."""
+    path = Path(args.goals) if args.goals else DEFAULT_GOALS_PATH
+    if not path.is_file():
+        if args.goals:
+            raise GoalsError(f"No plan at {path}.")
+        return None
+    return Plan.load(path)
 
 
 def _gather(args):
@@ -54,21 +65,39 @@ def cmd_summary(args) -> int:
 
     print(f"{summary.start_day} → {summary.end_day}  ({summary.days_covered} days, {summary.weigh_ins} weigh-ins)")
     print()
+    # One weigh-in is a snapshot; change and rate need two points to mean
+    # anything, and printing "+0.0" implies a measurement that never happened.
+    comparable = summary.weigh_ins >= 2
     rows = [
         ("Weight now (trend)", summary.last_weight_kg, unit, 1),
-        ("Weight at start", summary.first_weight_kg, unit, 1),
-        ("Change", summary.change_kg, unit, 1),
-        ("Rate", summary.kg_per_week, f"{unit}/week", 2),
+        ("Weight at start", summary.first_weight_kg if comparable else None, unit, 1),
+        ("Change", summary.change_kg if comparable else None, unit, 1),
+        ("Rate", summary.kg_per_week if comparable else None, f"{unit}/week", 2),
         ("Body fat now", summary.last_body_fat_pct, "%", 1),
-        ("Body fat change", summary.body_fat_change_pct, "pts", 1),
-        ("Fat mass change", summary.fat_change_kg, unit, 1),
-        ("Lean mass change", summary.lean_change_kg, unit, 1),
+        ("Body fat change", summary.body_fat_change_pct if comparable else None, "pts", 1),
+        ("Fat mass change", summary.fat_change_kg if comparable else None, unit, 1),
+        ("Lean mass change", summary.lean_change_kg if comparable else None, unit, 1),
     ]
     for label, value, suffix, digits in rows:
         if value is None:
             continue
         sign = "+" if label.endswith(("Change", "change", "Rate")) else ""
         print(f"  {label:<22} {value:{sign}.{digits}f} {suffix}")
+
+    plan = _load_plan(args)
+    if plan is not None:
+        progress = evaluate(plan.in_units(unit), records, summary.kg_per_week)
+        print(f"\nAgainst plan  ({plan.start_date} → {plan.end_date}, week {progress.week:.1f})")
+        if progress.target is not None:
+            print(f"  {'Target today':<22} {progress.target:.1f} {unit}")
+            print(f"  {'Difference':<22} {progress.delta:+.1f} {unit}  ({progress.status})")
+        if progress.remaining is not None:
+            print(f"  {'Remaining to goal':<22} {abs(progress.remaining):.1f} {unit}")
+        print(f"  {'Required rate':<22} {progress.required_per_week:+.2f} {unit}/week")
+        if progress.actual_per_week is not None:
+            print(f"  {'Your rate':<22} {progress.actual_per_week:+.2f} {unit}/week")
+        if progress.projected_end_weight is not None:
+            print(f"  {'Projected at week 52':<22} {progress.projected_end_weight:.1f} {unit}")
     return 0
 
 
@@ -105,14 +134,40 @@ def cmd_merge(args) -> int:
     return 0
 
 
+def cmd_goals(args) -> int:
+    path = Path(args.goals) if args.goals else DEFAULT_GOALS_PATH
+    if args.import_from:
+        plan = Plan.from_xlsx(args.import_from)
+        plan.save(path)
+        print(f"Imported plan from {args.import_from}\nSaved to {path.resolve()}\n")
+    else:
+        plan = Plan.load(path)
+
+    unit = plan.units
+    print(f"{plan.start_date} → {plan.end_date}  ({plan.plan_weeks} weeks)")
+    print(f"  Start weight         {plan.start_weight:.1f} {unit}")
+    print(f"  Goal weight          {plan.goal_weight:.1f} {unit}")
+    print(f"  Total to lose        {abs(plan.total_change):.1f} {unit}")
+    print(f"  Required rate        {plan.per_week:+.2f} {unit}/week")
+    if plan.target_calories:
+        print(f"  Target calories      {plan.target_calories:.0f} kcal/day")
+    print(
+        f"  Steps                {plan.steps.baseline:,} → {plan.steps.goal:,}"
+        f"  (+{plan.steps.increment:,} every {plan.steps.every_weeks} weeks)"
+    )
+    return 0
+
+
 def cmd_report(args) -> int:
     records, summary = _gather(args)
+    plan = _load_plan(args)
     html = build_report(
         records,
         summary,
         units=args.units,
         window_days=args.window,
         title=args.title,
+        plan=plan.in_units(args.units) if plan else None,
     )
     out = Path(args.out)
     out.write_text(html, encoding="utf-8")
@@ -130,7 +185,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--days", type=int, default=90, help="range length ending today (default: 90)")
     parser.add_argument("--start", help="start date YYYY-MM-DD (overrides --days)")
     parser.add_argument("--end", help="end date YYYY-MM-DD (default: today)")
-    parser.add_argument("--units", choices=["kg", "lb"], default="kg", help="mass units (default: kg)")
+    parser.add_argument(
+        "--units",
+        choices=["kg", "lb"],
+        default=None,
+        help="mass units (defaults to your plan's units, else kg)",
+    )
+    parser.add_argument(
+        "--goals",
+        metavar="PATH",
+        help=f"plan file to read (default: {DEFAULT_GOALS_PATH} if it exists)",
+    )
     parser.add_argument("--window", type=int, default=7, help="trailing trend window in days (default: 7)")
     parser.add_argument(
         "--pick",
@@ -161,6 +226,15 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--only-measured", action="store_true", help="drop days with no weigh-in")
     merge.set_defaults(func=cmd_merge)
 
+    goals = sub.add_parser("goals", help="show or import your weight/step plan")
+    goals.add_argument(
+        "--import",
+        dest="import_from",
+        metavar="FILE.xlsx",
+        help="import the plan from a tracker spreadsheet and save it",
+    )
+    goals.set_defaults(func=cmd_goals)
+
     report = sub.add_parser("report", help="build the HTML report")
     report.add_argument("-o", "--out", default="wlbc-report.html", help="output path")
     report.add_argument("--title", default="Body composition", help="report heading")
@@ -179,9 +253,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_oura and args.no_renpho:
         print("error: --no-oura and --no-renpho together leave nothing to fetch.", file=sys.stderr)
         return 2
+
+    # Your plan is in pounds; the tool defaults to kg. Follow the plan unless
+    # --units says otherwise, so the report and the plan never disagree.
+    if args.units is None:
+        try:
+            plan = _load_plan(args)
+        except GoalsError:
+            plan = None
+        args.units = plan.units if plan else "kg"
+
     try:
         return args.func(args)
-    except (OuraError, RenphoError) as exc:
+    except (OuraError, RenphoError, GoalsError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

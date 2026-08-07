@@ -1,0 +1,18 @@
+{
+  "start_date": "2026-01-01",
+  "start_weight": 180.0,
+  "goal_weight": 160.0,
+  "plan_weeks": 52,
+  "units": "lb",
+  "steps": {
+    "baseline": 3000,
+    "goal": 10000,
+    "increment": 1000,
+    "every_weeks": 2
+  },
+  "height_in": 68.0,
+  "bmr": 1500.0,
+  "activity_factor": 1.2,
+  "maintenance_calories": 1800.0,
+  "target_calories": 1600.0
+}

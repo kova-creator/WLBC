@@ -45,6 +45,38 @@ readings do, and the report header says so.
 wlbc --start 2026-04-03 --body-start 2026-08-05 report -o report.html
 ```
 
+## Goals
+
+Import a plan from a tracker spreadsheet once; it's saved to `goals.json` and
+everything reads it from there, so the report doesn't depend on a file in
+Downloads staying put.
+
+```bash
+pip install -e ".[goals]"
+wlbc goals --import "Weight, Body Comp & Steps Tracker.xlsx"
+wlbc goals                                   # show the current plan
+```
+
+The importer reads the `Dashboard` sheet's label/value rows: start date, start
+and goal weight, plan length, and the step ramp. You can also hand-write
+`goals.json` — see [goals.example.json](goals.example.json).
+
+With a plan loaded:
+
+- The weight chart gains a **target line**, linear from start to goal. Below it
+  is ahead of plan. Past the end date the target holds at the goal rather than
+  continuing down.
+- The steps panel gains its **ramp target** (both are step counts, so they share
+  an axis honestly).
+- Tiles show **vs target** and **to goal**; `wlbc summary` adds required rate,
+  your measured rate, and a projected finishing weight.
+- Mass units default to the plan's, so the target and the measurements can never
+  end up on different scales.
+
+Progress is deliberately conservative: the projection is skipped entirely until
+there are two weigh-ins, since a 52-week extrapolation from a single point is
+noise. `goals.json` is gitignored — it holds your weight and BMR.
+
 ### It adapts to how much data you have
 
 The report changes shape rather than implying precision the data doesn't
